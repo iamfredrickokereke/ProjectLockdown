@@ -5,10 +5,10 @@ import mapboxgl from 'mapbox-gl';
 import {
   filterLookupTable,
   selectedWorldview,
-  worldStyle,
   domainCoors,
   domainCoorsMobile,
   pause,
+  worldStyle,
 } from './util';
 import format from 'date-fns/format';
 import addDays from 'date-fns/addDays';
@@ -16,6 +16,10 @@ import { getWorldData } from '../../services/map';
 import MapboxGeocoder from '@mapbox/mapbox-gl-geocoder';
 import '@mapbox/mapbox-gl-geocoder/dist/mapbox-gl-geocoder.css';
 import CountriesSearcher from '../CountriesSearcher/CountriesSearcher';
+import AppContext from '../../contexts/AppContext';
+
+//import LocalStorage Functions
+import * as router from '../../router';
 
 /**
  * Primary UI component for user interaction
@@ -26,17 +30,17 @@ export const mapboxToken =
   'pk.eyJ1IjoiamZxdWVyYWx0IiwiYSI6ImNrODcwb29vajBjMDkzbWxqZHh6ZDU5aHUifQ.BjT63Mdh-P2myNvygIhSpw';
 
 export class Map extends React.Component {
+  static contextType = AppContext;
+
   constructor() {
     super();
-    // this.__handleSelect = this.__handleSelect.bind(this);
     this.initMap = this.initMap.bind(this);
     this.updateMap = this.updateMap.bind(this);
-    // this.updateMapLanguage = this.updateMapLanguage.bind(this);
-    // this.onMapClick = this.onMapClick.bind(this);
+    this.onMapClick = this.onMapClick.bind(this);
     this.onGetResult = this.onGetResult.bind(this);
 
     let coords = { lng: 40.7, lat: 25, zoom: 1.06 }; //default coordinates
-    let deviceCoords = coords;
+    let deviceCoords;
 
     // If it is a mobile device get the cooridnates for mobile (domainCoorsMobile), else get the desktop coordinates (domainCoors)
     if (screen.width <= 699) deviceCoords = domainCoorsMobile;
@@ -61,13 +65,15 @@ export class Map extends React.Component {
       isLocationSet: isLocationSet,
       geocoder: {},
       lastCountry: {},
+      mapStyle : [],
     };
+    this.mapContainer = React.createRef();
   }
 
-  setMapState(map, localData = [], lookupData) {
+  setMapState(map,lookupData, localData = []) {
     const localDataByIso = {};
-    localData.forEach(l => (localDataByIso[l.lockdown.iso] = l));
-    Object.keys(lookupData).forEach(key => {
+    localData.forEach((l) => (localDataByIso[l.lockdown.iso] = l));
+    Object.keys(lookupData).forEach((key) => {
       var lookup = lookupData[key];
       var countryInfo = localDataByIso[key];
       map.setFeatureState(
@@ -79,37 +85,38 @@ export class Map extends React.Component {
         {
           kind: countryInfo?.lockdown?.measure[0]?.value,
           name: key,
-        }
+        },
       );
     });
   }
 
   async initMap(mapData, lookupTable) {
     if (!mapboxgl) {
-      console.log('check the map');
-      await pause();
-      await this.initMap(mapData, lookupTable);
+       pause();
+      this.initMap(mapData, lookupTable);
     }
-    if (mapboxgl.getRTLTextPluginStatus() !== 'loaded') {
+
+
+    const mapBoxglState = mapboxgl.getRTLTextPluginStatus();
+    if (mapBoxglState === 'unavailable' || mapBoxglState === 'error') {
       mapboxgl.setRTLTextPlugin(
         'https://api.mapbox.com/mapbox-gl-js/plugins/mapbox-gl-rtl-text/v0.2.3/mapbox-gl-rtl-text.js',
         null,
-        true // Lazy load the plugin
+        true, // Lazy load the plugin
       );
     }
 
     let map = new mapboxgl.Map({
       accessToken: mapboxToken,
-      container: this.ref,
-      // style: 'mapbox://styles/jfqueralt/ck9hi7wl616pz1iugty1cpeiv?optimize=true',
+      container: this.mapContainer.current,
       style:
         'mapbox://styles/jfqueralt/ckavedmnk253z1iphmsy39s3r?optimize=true',
       center: [this.state.lng, this.state.lat],
       zoom: this.state.zoom,
       keyboard: false,
       pitchWithRotate: false,
-      hash: true,
     });
+  
     let geocoder = new MapboxGeocoder({
       accessToken: mapboxToken,
       language: this.props.currentLanguage
@@ -121,11 +128,6 @@ export class Map extends React.Component {
     geocoder.on('results', this.onGetResult);
     geocoder.addTo('#mapBlank');
     window.map = map;
-    // we dont need to remap small mapData
-    // const localData = mapData.features.map((f) => {
-    //   return { ISO: f.properties.iso2, lockdown_status: f.properties.lockdown_status, name: f.properties.NAME };
-    // });
-
     const localData = mapData[this.props.selectedDate];
 
     map.on('style.load', () => {
@@ -171,7 +173,7 @@ export class Map extends React.Component {
               },
               {
                 hover: false,
-              }
+              },
             );
           }
 
@@ -185,34 +187,38 @@ export class Map extends React.Component {
             },
             {
               hover: true,
-            }
+            },
           );
         }
       });
       map.on('click', 'admin-0-fill', this.onMapClick);
 
-      console.log('the style is loaded');
     });
 
-    map.on('load', function () {
-      console.log('map is loaded');
-      createViz(lookupTable);
+    map.on('load', () => {
+      const waiting = () => {
+        if (!map.isStyleLoaded()) {
+          setTimeout(waiting, 200);
+        } else {
+          createViz(lookupTable);
+        }
+      };
+      waiting();
     });
-
+  
     this.props.setIsLoading(false);
 
-    const createViz = lookupTable => {
+    const createViz =  async (lookupTableData) => {    
       map.addSource('admin-0', {
         type: 'vector',
         url: 'mapbox://mapbox.boundaries-adm0-v3',
       });
-
-      const lookupData = filterLookupTable(lookupTable);
+      const lookupData = filterLookupTable(lookupTableData);
 
       // Filters the lookup table to features with the 'US' country code
       // and keys the table using the `unit_code` property that will be used for the join
 
-      map.addLayer(
+       map.addLayer(
         {
           id: 'admin-0-fill',
           type: 'fill',
@@ -228,12 +234,11 @@ export class Map extends React.Component {
             ],
             ['!', ['has', 'dispute']],
           ],
+
           paint: {
             'fill-color': [
               'case',
               ['!=', ['feature-state', 'kind'], null],
-              // ['to-color', ['get', ['feature-state', 'color']]],
-              // 'rgba(171,56,213,0.5)',
               [
                 'match',
                 ['feature-state', 'kind'],
@@ -266,7 +271,7 @@ export class Map extends React.Component {
             ],
           },
         },
-        'admin-1-boundary-bg'
+        'admin-1-boundary-bg',
       );
 
       //
@@ -278,7 +283,7 @@ export class Map extends React.Component {
       map.setPaintProperty(
         'country-label',
         'text-halo-color',
-        'hsla(0, 0%, 100%,0.6)'
+        'hsla(0, 0%, 100%,0.6)',
       );
       map.setPaintProperty('country-label', 'text-halo-width', 1);
 
@@ -290,24 +295,24 @@ export class Map extends React.Component {
       map.setPaintProperty(
         'admin-0-boundary',
         'line-color',
-        'hsla(0, 0%, 90%, 0.8)'
+        'hsla(0, 0%, 90%, 0.8)',
       );
       map.setPaintProperty(
         'admin-0-boundary-disputed',
         'line-color',
-        'hsla(0, 0%, 90%, 0.5)'
+        'hsla(0, 0%, 90%, 0.5)',
       );
       map.setPaintProperty(
         'admin-0-boundary-bg',
         'line-color',
-        'hsla(0, 0%, 84%, 0.3)'
+        'hsla(0, 0%, 84%, 0.3)',
       );
 
       // Improve contrast of state lines
       map.setPaintProperty(
         'admin-1-boundary',
         'line-color',
-        'hsla(0, 0%, 90%, 0.6)'
+        'hsla(0, 0%, 90%, 0.6)',
       );
 
       // Improve contrast of city labels
@@ -317,7 +322,7 @@ export class Map extends React.Component {
       // Change water color
       map.setPaintProperty('water', 'fill-color', '#e0e0e0');
 
-      const setStates = e => {
+      const setStates = (e) => {
         localData.forEach(function (row) {
           map.setFeatureState(
             {
@@ -328,7 +333,7 @@ export class Map extends React.Component {
             {
               kind: row.lockdown.measure[0].value,
               name: row.lockdown.iso,
-            }
+            },
           );
         });
 
@@ -374,13 +379,15 @@ export class Map extends React.Component {
         ? format(endDate, 'yyyy-MM-dd')
         : format(addDays(new Date(), daysRange - 14), 'yyyy-MM-dd');
       let newMapData = await getWorldData(startDate, endDate);
-      localData = newMapData[selectedDate];
-      mapData = newMapData;
-      this.setState({ mapData }, () =>
-        this.setMapState(this.state.map, localData, lookupData)
-      );
+      if (newMapData) {
+        localData = newMapData[selectedDate];
+        mapData = newMapData;
+        this.setState({ mapData }, () =>
+          this.setMapState(this.state.map,lookupData, localData),
+        );
+      }
     } else {
-      this.setMapState(this.state.map, localData, lookupData);
+      this.setMapState(this.state.map,lookupData, localData);
     }
   }
 
@@ -402,33 +409,63 @@ export class Map extends React.Component {
       'get',
       'name_' + iso,
     ]);
-    // let map = this.state.map.setLayoutProperty('country-label', 'text-field', [
-    //   'get',
-    //   'name_' + iso,
-    // ]);
   }
 
   onGetResult(results) {
-    // let { features } = results;
-    // if (features[0]) {
-    //   let countryName = features[0].text;
-    //   let wikidata = features[0].properties.wikidata;
-    //   // router.setSearchParam('wikidata', wikidata);
-    //   // router.setSearchParam('country', countryName);
-    //   // router.setSearchParam('iso2', this.state.lastCountry.iso2);
-    // } else {
-    //   // router.setSearchParam('country', this.state.lastCountry.country);
-    //   // router.setSearchParam('iso2', this.state.lastCountry.iso2);
-    // }
+    let { features } = results;
+
+    if (features[0]) {
+      let countryName = features[0].text;
+      let wikidata = features[0].properties.wikidata;
+
+      router.setLocalStorage({
+        iso2: this.state.lastCountry.iso2,
+        country: countryName,
+        wikidata: wikidata,
+      });
+    } else {
+      router.setLocalStorage({
+        iso2: this.state.lastCountry.iso2,
+        country: this.state.lastCountry.name,
+      });
+    }
   }
 
-  async componentDidMount() {
-    console.log('Selected date', this.props.selectedDate);
+  onMapClick(e) {
+    let { map, lookupTable } = this.state;
+    const features = map.queryRenderedFeatures(e.point, {
+      layers: ['admin-0-fill'],
+    });
+    this.state.geocoder.query(
+      lookupTable.adm0.data.all[features[0].properties.iso_3166_1].name,
+    );
+    this.setState({
+      lastCountry: {
+        country:
+          lookupTable.adm0.data.all[features[0].properties.iso_3166_1].name,
+        iso2: features[0].properties.iso_3166_1,
+      },
+    });
+  }
 
-    const { daysRange } = this.props;
-
-    let { startDate, endDate } = this.props;
-    console.log(this.props);
+  /**
+   * this method will return the color code based on the title 
+   * if that tilte is not found in out list it will  return the default color
+   * @param {string} title 
+   */
+  setWorldStyle = (title) => {
+    const {mapStyle} = this.state;
+    const result =mapStyle.filter(style => style.title === title);
+    if(result && result.length ===1){
+      return result[0].style;
+    }else{
+      return "#ccc";
+    }
+  }
+  
+  
+   initializeMapBox =  async () => {
+    let { startDate, endDate, daysRange } = this.props;
     startDate = startDate
       ? format(startDate, 'yyyy-MM-dd')
       : format(addDays(new Date(), -14), 'yyyy-MM-dd');
@@ -438,7 +475,7 @@ export class Map extends React.Component {
     // the world map needs a large data source, lazily fetch them in parallel
     const [mapData, lookupTable] = await Promise.all([
       getWorldData(startDate, endDate),
-      fetch('./data/boundaries-adm0-v3.json').then(r => r.json()),
+      fetch('./data/boundaries-adm0-v3.json').then((r) => r.json()),
     ]);
 
     // we need to prepare a static country list not dynamically calculate them
@@ -452,41 +489,45 @@ export class Map extends React.Component {
       },
       () => {
         console.log('STATE', this.state);
-      }
+      },
     );
+      setTimeout(()=> {
+        if (mapData && lookupTable) this.initMap(mapData, lookupTable);
+      },2000)
+    };
 
-    console.log('Lookup', lookupTable);
+    async componentDidMount() {
+        this.initializeMapBox();
+    }
 
-    await this.initMap(mapData, lookupTable);
-  }
-
-  componentDidUpdate(previousProps, previousState, snapshot) {
+  async componentDidUpdate(previousProps, previousState, snapshot) {
     if (previousProps.selectedDate !== this.props.selectedDate) {
-      console.log('Selected date didUpdate', this.props.selectedDate);
-
       if (this.state.isMapReady) {
         this.updateMap(
           this.state.mapData,
           this.state.lookupTable,
-          this.props.selectedDate
+          this.props.selectedDate,
         );
         if (previousProps.currentLanguage !== this.props.currentLanguage) {
           this.updateMapLanguage(this.props.currentLanguage);
         }
       }
     }
+
   }
- 
+
   render() {
+   const {isCountrySearchVisible} = this.props;
+    
     return (
       <>
         <div
-          ref={ref => (this.ref = ref)}
+          ref = {this.mapContainer}
           id="map"
+          onClick={() => this.props.onOpen(this.state.lastCountry)}
           className="map-container"
-          onClick={this.props.onOpen}
-          ></div>
-        <CountriesSearcher
+        ></div>
+         { isCountrySearchVisible &&  <CountriesSearcher
           dark={this.props.dark}
           i18n={{ locale: 'en, en-US' }}
           map={{
@@ -497,7 +538,7 @@ export class Map extends React.Component {
               });
             },
           }}
-        />
+        /> }
         <span id="mapBlank" style={{ display: 'none' }}></span>
       </>
     );
